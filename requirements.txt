@@ -1,7 +1,6 @@
 streamlit
 pandas
-fpdf
-gspread
 streamlit-gsheets
+
 
 
