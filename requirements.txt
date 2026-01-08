@@ -1,6 +1,8 @@
 streamlit
-pandas
-streamlit-gsheets
+pandas>=2.0.0
+fpdf
+st-gsheets-connection
+
 
 
 
