@@ -244,14 +244,13 @@ with tab2:
 # ==============================================================================
 with tab3:
     st.header("⚙️ Administración del Negocio")
-    st.info("💡 Aquí puedes editar el historial y gestionar tus productos. Los cambios se guardan en la Nube.")
     
-    # Botón de emergencia para recargar si algo no cuadra
-    if st.button("🔄 Forzar Recarga de Datos"):
+    # Botón para recargar datos si la internet va lenta
+    if st.button("🔄 Recargar Datos"):
         st.cache_data.clear()
         st.rerun()
 
-    # --- 1. SECCIÓN DE FINANZAS ---
+    # --- 1. RESUMEN FINANCIERO ---
     df_v = cargar_datos_sheets("Ventas", ["Fecha", "Cliente", "Total"])
     df_g = cargar_datos_sheets("Gastos", ["Fecha", "Concepto", "Categoría", "Monto"])
 
@@ -261,66 +260,93 @@ with tab3:
         ganancia_neta = total_ingresos - total_gastos
 
         c1, c2, c3 = st.columns(3)
-        c1.metric("Ingresos Totales", f"{MONEDA} {total_ingresos:,.2f}")
-        c2.metric("Gastos Totales", f"{MONEDA} {total_gastos:,.2f}")
-        c3.metric("Ganancia Neta", f"{MONEDA} {ganancia_neta:,.2f}")
+        c1.metric("Ingresos", f"{MONEDA} {total_ingresos:,.2f}")
+        c2.metric("Gastos", f"{MONEDA} {total_gastos:,.2f}")
+        c3.metric("Ganancia", f"{MONEDA} {ganancia_neta:,.2f}")
     
     st.divider()
 
-    # --- 2. GESTIÓN DE PRODUCTOS ---
-    st.subheader("📦 Catálogo de Productos")
-    st.caption("Añade productos abajo o modifica los precios existentes.")
+    # --- 2. AGREGAR PRODUCTO NUEVO (FORMULARIO FÁCIL) ---
+    st.subheader("📦 Agregar Nuevo Producto al Catálogo")
     
-    # Carga Catalogo
+    # Usamos un "Formulario" para agrupar los datos y limpiar al final
+    with st.form("form_nuevo_producto", clear_on_submit=True):
+        col_p1, col_p2 = st.columns([3, 1])
+        with col_p1:
+            nuevo_nombre = st.text_input("Nombre del Producto")
+        with col_p2:
+            nuevo_precio = st.number_input("Precio", min_value=0.0, step=10.0)
+        
+        btn_agregar = st.form_submit_button("➕ Guardar Producto Nuevo")
+        
+        if btn_agregar:
+            if nuevo_nombre and nuevo_precio >= 0:
+                with st.spinner("Guardando en catálogo..."):
+                    try:
+                        # 1. Cargar catálogo actual
+                        df_cat_actual = cargar_datos_sheets("Catalogo", ["Producto", "Precio"])
+                        
+                        # 2. Crear nueva fila
+                        fila_nueva = pd.DataFrame([{"Producto": nuevo_nombre, "Precio": float(nuevo_precio)}])
+                        
+                        # 3. Unir y guardar
+                        df_cat_update = pd.concat([df_cat_actual, fila_nueva], ignore_index=True)
+                        conn.update(worksheet="Catalogo", data=df_cat_update)
+                        
+                        st.success(f"✅ Producto '{nuevo_nombre}' agregado.")
+                        st.cache_data.clear() # Limpiar memoria para ver cambios
+                        # No hacemos rerun aquí inmediato para dejar ver el mensaje de éxito
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+            else:
+                st.warning("Escribe un nombre para el producto.")
+
+    st.divider()
+
+    # --- 3. EDITAR PRODUCTOS EXISTENTES (TABLA) ---
+    st.subheader("✏️ Editar Precios o Borrar")
+    st.caption("Modifica los precios aquí abajo y dale a 'Guardar Cambios'. Para borrar, selecciona la fila y presiona Suprimir (Del).")
+    
+    # Cargamos de nuevo para ver lo que acabamos de agregar
     df_catalogo = cargar_datos_sheets("Catalogo", ["Producto", "Precio"])
     
-    # Editor de Productos
     df_catalogo_editado = st.data_editor(
         df_catalogo,
-        num_rows="dynamic", # Permite añadir filas nuevas
+        num_rows="dynamic",
         use_container_width=True,
         key="editor_catalogo_main",
         column_config={
             "Precio": st.column_config.NumberColumn(
                 "Precio Unitario",
-                format="$%d", # Formato de dinero
-                min_value=0,
-                step=5
+                format="$%d"
             )
         }
     )
 
-    if st.button("💾 Guardar Cambios en Catálogo"):
+    if st.button("💾 Guardar Cambios en Tabla (Precios/Borrados)"):
         try:
-            # Validacion numerica
             df_catalogo_editado["Precio"] = pd.to_numeric(df_catalogo_editado["Precio"], errors='coerce').fillna(0)
-            
-            # Guardar
             conn.update(worksheet="Catalogo", data=df_catalogo_editado)
-            
-            st.success("✅ Catálogo actualizado. Los vendedores verán los nuevos precios.")
-            st.cache_data.clear() # Limpiamos memoria para que se actualice la lista en la Pestaña 1
-            st.rerun() # Reiniciamos la app
+            st.success("✅ Tabla actualizada correctamente.")
+            st.cache_data.clear()
+            st.rerun()
         except Exception as e:
-            st.error(f"Error al guardar catálogo: {e}")
+            st.error(f"Error al guardar tabla: {e}")
 
     st.divider()
 
-    # --- 3. HISTORIAL DE VENTAS Y GASTOS ---
-    col_edit1, col_edit2 = st.columns(2)
-    
-    with col_edit1:
-        st.subheader("📝 Historial Ventas")
-        df_ventas_editado = st.data_editor(df_v, num_rows="dynamic", use_container_width=True, key="ed_vtas")
-        if st.button("💾 Guardar Ventas"):
-            conn.update(worksheet="Ventas", data=df_ventas_editado)
-            st.success("Guardado.")
-            st.rerun()
+    # --- 4. HISTORIAL DE VENTAS Y GASTOS ---
+    with st.expander("📝 Ver Historial de Ventas y Gastos"):
+        col_edit1, col_edit2 = st.columns(2)
+        with col_edit1:
+            st.write("**Historial Ventas**")
+            df_ventas_editado = st.data_editor(df_v, num_rows="dynamic", key="ed_vtas")
+            if st.button("Guardar Cambios Ventas"):
+                conn.update(worksheet="Ventas", data=df_ventas_editado)
+                st.rerun()
 
-    with col_edit2:
-        st.subheader("📝 Historial Gastos")
-        df_gastos_editado = st.data_editor(df_g, num_rows="dynamic", use_container_width=True, key="ed_gts")
-        if st.button("💾 Guardar Gastos"):
-            conn.update(worksheet="Gastos", data=df_gastos_editado)
-            st.success("Guardado.")
-            st.rerun()
+        with col_edit2:
+            st.write("**Historial Gastos**")
+            df_gastos_editado = st.data_editor(df_g, num_rows="dynamic", key="ed_gts")
+            if st.button("Guardar Cambios Gastos"):
+                conn.update(worksheet="Gastos", data=df_gastos_editado)
