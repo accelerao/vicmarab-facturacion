@@ -6,56 +6,45 @@ from streamlit_gsheets import GSheetsConnection
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Sistema VICMARAB", layout="wide", page_icon="🛍️")
-st.title("📊 VICMARAB - Sistema de Gestión en Nube")
+st.title("📊 VICMARAB - Sistema de Gestión")
 
 MONEDA = "DOP"
 
 # --- CONEXIÓN A GOOGLE SHEETS ---
-# Busca la info en .streamlit/secrets.toml (Local) o en Secrets de Streamlit Cloud (Nube)
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# --- FUNCIONES DE CARGA DE DATOS ---
+# --- FUNCIONES DE CARGA OPTIMIZADAS (CON CACHÉ) ---
+# Esto evita el error "Quota Exceeded" (Error 429)
 
+@st.cache_data(ttl=600) # Guarda en memoria 10 mins
 def cargar_datos_sheets(hoja, columnas_esperadas):
-    """Carga datos de Ventas o Gastos."""
     try:
-        # ttl=0 para que no guarde caché y siempre muestre datos frescos
-        df = conn.read(worksheet=hoja, ttl=0, usecols=columnas_esperadas)
+        # Leemos sin ttl=0 para usar la caché
+        df = conn.read(worksheet=hoja, usecols=columnas_esperadas)
         df = df.dropna(how="all")
         return df
     except Exception:
-        # Si falla (hoja vacía), devuelve dataframe vacío
         return pd.DataFrame(columns=columnas_esperadas)
 
+@st.cache_data(ttl=600)
 def obtener_catalogo():
-    """Carga la lista de precios desde la pestaña 'Catalogo'."""
     try:
-        # Leemos columnas A y B (Producto y Precio)
-        df = conn.read(worksheet="Catalogo", ttl=0, usecols=[0, 1])
+        df = conn.read(worksheet="Catalogo", usecols=[0, 1])
         df = df.dropna()
-        
-        # Si la hoja está vacía
-        if df.empty:
-            return {}
-            
+        if df.empty: return {}
         # Convertimos a diccionario: {"Producto": Precio}
-        # Asumimos que la columna 0 es el nombre y la 1 es el precio
         return dict(zip(df.iloc[:, 0], df.iloc[:, 1]))
-    except Exception as e:
-        st.error(f"Error cargando catálogo: {e}")
+    except Exception:
         return {}
 
-# --- CARGAR CATÁLOGO AL INICIO ---
+# --- CARGA INICIAL ---
 CATALOGO = obtener_catalogo()
 
-if not CATALOGO:
-    st.warning("⚠️ El catálogo parece vacío o no se pudo cargar. Revisa la pestaña 'Catalogo' en Google Sheets.")
-
-# --- CREAMOS LAS PESTAÑAS ---
-tab1, tab2, tab3 = st.tabs(["🧾 Facturación", "💸 Registrar Gastos", "📈 Contabilidad (Editar)"])
+# --- PESTAÑAS ---
+tab1, tab2, tab3 = st.tabs(["🧾 Facturación", "💸 Registrar Gastos", "⚙️ Administración"])
 
 # ==============================================================================
-# PESTAÑA 1: FACTURACIÓN
+# PESTAÑA 1: FACTURACIÓN (CON MEMORIA DE CLIENTES + PRODUCTOS FLEXIBLES)
 # ==============================================================================
 with tab1:
     st.header("Nueva Factura")
@@ -63,47 +52,31 @@ with tab1:
     if 'factura_items' not in st.session_state:
         st.session_state.factura_items = pd.DataFrame(columns=["Descripción", "Cantidad", "Precio Unitario"])
 
-    # --- 1. CARGAR HISTORIAL DE CLIENTES ---
-    # Leemos ventas anteriores para obtener la base de datos de clientes
+    # --- 1. DATOS DEL CLIENTE (AUTORRELLENO) ---
     df_clientes_db = cargar_datos_sheets("Ventas", ["Cliente", "Telefono", "Direccion"])
     
-    # Obtenemos lista de nombres únicos (quitando vacíos)
     lista_clientes = []
     if not df_clientes_db.empty:
-        # drop_duplicates: Si Juan compró 10 veces, solo tomamos la última vez
         df_unicos = df_clientes_db.drop_duplicates(subset=["Cliente"], keep="last")
-        lista_clientes = df_unicos["Cliente"].dropna().tolist()
-        lista_clientes.sort() # Ordenar alfabéticamente
+        lista_clientes = sorted(df_unicos["Cliente"].dropna().astype(str).tolist())
 
-    # --- 2. INTERFAZ DE SELECCIÓN ---
     with st.expander("👤 Datos del Cliente", expanded=True):
-        # Buscador de clientes antiguos
         opcion_cliente = st.selectbox(
-            "📂 Buscar Cliente Existente (o selecciona 'Nuevo')", 
+            "📂 Buscar Cliente Existente", 
             options=["-- Nuevo / Manual --"] + lista_clientes,
             index=0
         )
 
-        # Lógica de autocompletado
-        val_nombre = ""
-        val_tel = ""
-        val_dir = ""
+        val_nombre, val_tel, val_dir = "", "", ""
 
         if opcion_cliente != "-- Nuevo / Manual --":
-            # Si seleccionamos a alguien, buscamos sus datos
             datos = df_clientes_db[df_clientes_db["Cliente"] == opcion_cliente].iloc[-1]
             val_nombre = str(datos["Cliente"])
-            # Usamos "get" por si la columna está vacía en excel
-            val_tel = str(datos.get("Telefono", ""))
-            val_dir = str(datos.get("Direccion", ""))
-            
-            # Limpieza de datos (quitar 'nan' si excel estaba sucio)
-            if val_tel == "nan": val_tel = ""
-            if val_dir == "nan": val_dir = ""
+            val_tel = str(datos.get("Telefono", "")).replace("nan", "")
+            val_dir = str(datos.get("Direccion", "")).replace("nan", "")
 
         col1, col2 = st.columns(2)
         with col1:
-            # Usamos 'value' para pre-llenar si encontramos al cliente
             cliente_nombre = st.text_input("Nombre del Cliente", value=val_nombre, key="cli_nom")
             cliente_telefono = st.text_input("Número Telefónico", value=val_tel, key="cli_tel")
         with col2:
@@ -112,41 +85,54 @@ with tab1:
 
     st.divider()
 
-    # --- (EL RESTO DEL CÓDIGO SIGUE IGUAL: PRODUCTOS, BOTÓN GUARDAR, ETC) ---
-    # Solo asegúrate de que al GUARDAR (botón final), incluyas el teléfono en la hoja:
-    
-    # ... (Sección de productos igual que antes) ...
+    # --- 2. SELECCIÓN DE PRODUCTOS (HÍBRIDA) ---
+    st.write("### Agregar Producto")
+    lista_opciones = ["-- Selecciona un Producto --"] + list(CATALOGO.keys()) + ["-- Otro / Manual --"]
 
-    # Copia esto también para asegurarnos de que el botón de guardar incluya el Teléfono
+    def actualizar_precio_sesion():
+        item = st.session_state.selector_producto_key
+        if item in CATALOGO:
+            st.session_state.input_precio_key = float(CATALOGO[item])
+        elif item == "-- Selecciona un Producto --":
+            st.session_state.input_precio_key = 0.0
+
     c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
     with c1:
-        opciones = list(CATALOGO.keys()) if CATALOGO else ["Sin productos"]
-        prod_sel = st.selectbox("Producto", options=opciones)
+        prod_sel = st.selectbox("Producto", options=lista_opciones, key="selector_producto_key", on_change=actualizar_precio_sesion)
+        
+        nombre_final_producto = prod_sel
+        if prod_sel == "-- Otro / Manual --":
+            nombre_final_producto = st.text_input("Escribe el nombre:", placeholder="Ej. Servicio Especial")
+        elif prod_sel == "-- Selecciona un Producto --":
+            nombre_final_producto = ""
+
     with c2:
         cant = st.number_input("Cantidad", min_value=1, value=1)
     with c3:
-        precio_sugerido = CATALOGO.get(prod_sel, 0.0)
-        prec = st.number_input("Precio", value=float(precio_sugerido))
+        if "input_precio_key" not in st.session_state: st.session_state.input_precio_key = 0.0
+        prec = st.number_input("Precio", key="input_precio_key", step=10.0)
     with c4:
         st.write("##")
         if st.button("➕ Agregar"):
-            if prod_sel != "Sin productos":
-                nuevo = pd.DataFrame([{"Descripción": prod_sel, "Cantidad": cant, "Precio Unitario": prec}])
+            if nombre_final_producto:
+                nuevo = pd.DataFrame([{"Descripción": nombre_final_producto, "Cantidad": cant, "Precio Unitario": prec}])
                 st.session_state.factura_items = pd.concat([st.session_state.factura_items, nuevo], ignore_index=True)
                 st.rerun()
+            else:
+                st.warning("Selecciona un producto.")
 
+    # Tabla de items
     edited_df = st.data_editor(st.session_state.factura_items, num_rows="dynamic", use_container_width=True, key="editor_factura")
     st.session_state.factura_items = edited_df
 
     subtotal = 0
-    total_final = 0
     if not st.session_state.factura_items.empty:
         st.session_state.factura_items['Total'] = st.session_state.factura_items['Cantidad'] * st.session_state.factura_items['Precio Unitario']
         subtotal = st.session_state.factura_items['Total'].sum()
-        total_final = subtotal
 
-    st.info(f"💰 Total a cobrar: {MONEDA} {total_final:,.2f}")
+    st.info(f"💰 Total a cobrar: {MONEDA} {subtotal:,.2f}")
 
+    # --- 3. GENERAR PDF Y GUARDAR ---
     def generar_pdf():
         pdf = FPDF()
         pdf.add_page()
@@ -154,8 +140,7 @@ with tab1:
         pdf.cell(0, 10, "VICMARAB COMERCIAL", ln=1, align="C")
         pdf.set_font("Arial", size=10)
         pdf.cell(0, 10, f"Cliente: {cliente_nombre} | Tel: {cliente_telefono}", ln=1)
-        if cliente_direccion:
-            pdf.cell(0, 5, f"Dirección: {cliente_direccion}", ln=1)
+        if cliente_direccion: pdf.cell(0, 5, f"Dirección: {cliente_direccion}", ln=1)
         pdf.cell(0, 5, f"Fecha: {fecha_factura}", ln=1)
         pdf.ln(5)
         pdf.set_font("Arial", 'B', 10)
@@ -173,26 +158,28 @@ with tab1:
             pdf.ln()
         pdf.ln(5)
         pdf.set_font("Arial", 'B', 12)
-        pdf.cell(0, 10, f"TOTAL A PAGAR: {MONEDA} {total_final:,.2f}", ln=1, align="R")
+        pdf.cell(0, 10, f"TOTAL A PAGAR: {MONEDA} {subtotal:,.2f}", ln=1, align="R")
         return pdf.output(dest="S").encode("latin-1")
 
     if st.button("🖨️ Finalizar y Guardar Venta"):
         if cliente_nombre and not st.session_state.factura_items.empty:
             with st.spinner("Guardando en la nube..."):
                 try:
-                    # IMPORTANTE: Ahora cargamos y guardamos también el TELEFONO
                     df_ventas = cargar_datos_sheets("Ventas", ["Fecha", "Cliente", "Telefono", "Direccion", "Total"])
                     
                     nueva_venta = pd.DataFrame([{
                         "Fecha": str(fecha_factura),
                         "Cliente": cliente_nombre,
-                        "Telefono": cliente_telefono,  # <-- Guardamos el teléfono para la próxima
+                        "Telefono": cliente_telefono,
                         "Direccion": cliente_direccion,
-                        "Total": float(total_final)
+                        "Total": float(subtotal)
                     }])
                     
                     df_actualizado = pd.concat([df_ventas, nueva_venta], ignore_index=True)
                     conn.update(worksheet="Ventas", data=df_actualizado)
+                    
+                    # --- LIMPIEZA DE CACHÉ ---
+                    st.cache_data.clear() # ¡CRUCIAL PARA VER EL CAMBIO!
                     
                     st.success("✅ Venta guardada.")
                     pdf_bytes = generar_pdf()
@@ -202,151 +189,107 @@ with tab1:
                     st.error(f"Error: {e}")
         else:
             st.error("⚠️ Faltan datos.")
+
 # ==============================================================================
-# PESTAÑA 2: REGISTRAR GASTOS
+# PESTAÑA 2: GASTOS
 # ==============================================================================
 with tab2:
     st.header("📉 Registro de Gastos")
-    
     col_g1, col_g2, col_g3 = st.columns(3)
-    with col_g1:
-        gasto_concepto = st.text_input("Concepto (Ej. Luz, Agua)")
-    with col_g2:
-        gasto_monto = st.number_input("Monto Gasto", min_value=0.0, step=100.0)
+    with col_g1: gasto_concepto = st.text_input("Concepto (Ej. Luz)")
+    with col_g2: gasto_monto = st.number_input("Monto Gasto", min_value=0.0, step=100.0)
     with col_g3:
         gasto_fecha = st.date_input("Fecha Gasto", date.today())
         gasto_categoria = st.selectbox("Categoría", ["Materia Prima", "Transporte", "Servicios", "Nómina", "Otros"])
 
     if st.button("Guardar Gasto"):
         if gasto_concepto and gasto_monto > 0:
-            with st.spinner("Guardando gasto..."):
+            with st.spinner("Guardando..."):
                 try:
                     df_gastos = cargar_datos_sheets("Gastos", ["Fecha", "Concepto", "Categoría", "Monto"])
-                    
                     nuevo_gasto = pd.DataFrame([{
-                        "Fecha": str(gasto_fecha),
-                        "Concepto": gasto_concepto,
-                        "Categoría": gasto_categoria,
-                        "Monto": float(gasto_monto)
+                        "Fecha": str(gasto_fecha), "Concepto": gasto_concepto,
+                        "Categoría": gasto_categoria, "Monto": float(gasto_monto)
                     }])
+                    conn.update(worksheet="Gastos", data=pd.concat([df_gastos, nuevo_gasto], ignore_index=True))
                     
-                    df_gastos_actualizado = pd.concat([df_gastos, nuevo_gasto], ignore_index=True)
-                    conn.update(worksheet="Gastos", data=df_gastos_actualizado)
+                    # --- LIMPIEZA DE CACHÉ ---
+                    st.cache_data.clear()
                     
-                    st.success(f"✅ Gasto de {MONEDA} {gasto_monto} guardado.")
+                    st.success(f"✅ Gasto guardado.")
                 except Exception as e:
-                    st.error(f"Error al guardar: {e}")
+                    st.error(f"Error: {e}")
         else:
-            st.warning("Revisa el concepto o el monto.")
+            st.warning("Revisa los datos.")
 
 # ==============================================================================
-# PESTAÑA 3: CONTABILIDAD Y GESTIÓN DE PRODUCTOS
+# PESTAÑA 3: ADMINISTRACIÓN
 # ==============================================================================
 with tab3:
-    st.header("⚙️ Administración del Negocio")
-    
-    # Botón para recargar datos si la internet va lenta
-    if st.button("🔄 Recargar Datos"):
+    st.header("⚙️ Administración")
+    if st.button("🔄 Recargar Datos Manualmente"):
         st.cache_data.clear()
         st.rerun()
 
-    # --- 1. RESUMEN FINANCIERO ---
+    # --- RESUMEN ---
     df_v = cargar_datos_sheets("Ventas", ["Fecha", "Cliente", "Total"])
     df_g = cargar_datos_sheets("Gastos", ["Fecha", "Concepto", "Categoría", "Monto"])
-
     if not df_v.empty or not df_g.empty:
-        total_ingresos = pd.to_numeric(df_v["Total"], errors='coerce').sum()
-        total_gastos = pd.to_numeric(df_g["Monto"], errors='coerce').sum()
-        ganancia_neta = total_ingresos - total_gastos
-
+        ing = pd.to_numeric(df_v["Total"], errors='coerce').sum()
+        gas = pd.to_numeric(df_g["Monto"], errors='coerce').sum()
         c1, c2, c3 = st.columns(3)
-        c1.metric("Ingresos", f"{MONEDA} {total_ingresos:,.2f}")
-        c2.metric("Gastos", f"{MONEDA} {total_gastos:,.2f}")
-        c3.metric("Ganancia", f"{MONEDA} {ganancia_neta:,.2f}")
-    
+        c1.metric("Ingresos", f"{MONEDA} {ing:,.2f}")
+        c2.metric("Gastos", f"{MONEDA} {gas:,.2f}")
+        c3.metric("Ganancia", f"{MONEDA} {(ing-gas):,.2f}")
     st.divider()
 
-    # --- 2. AGREGAR PRODUCTO NUEVO (FORMULARIO FÁCIL) ---
-    st.subheader("📦 Agregar Nuevo Producto al Catálogo")
-    
-    # Usamos un "Formulario" para agrupar los datos y limpiar al final
-    with st.form("form_nuevo_producto", clear_on_submit=True):
-        col_p1, col_p2 = st.columns([3, 1])
-        with col_p1:
-            nuevo_nombre = st.text_input("Nombre del Producto")
-        with col_p2:
-            nuevo_precio = st.number_input("Precio", min_value=0.0, step=10.0)
-        
-        btn_agregar = st.form_submit_button("➕ Guardar Producto Nuevo")
-        
-        if btn_agregar:
-            if nuevo_nombre and nuevo_precio >= 0:
-                with st.spinner("Guardando en catálogo..."):
-                    try:
-                        # 1. Cargar catálogo actual
-                        df_cat_actual = cargar_datos_sheets("Catalogo", ["Producto", "Precio"])
-                        
-                        # 2. Crear nueva fila
-                        fila_nueva = pd.DataFrame([{"Producto": nuevo_nombre, "Precio": float(nuevo_precio)}])
-                        
-                        # 3. Unir y guardar
-                        df_cat_update = pd.concat([df_cat_actual, fila_nueva], ignore_index=True)
-                        conn.update(worksheet="Catalogo", data=df_cat_update)
-                        
-                        st.success(f"✅ Producto '{nuevo_nombre}' agregado.")
-                        st.cache_data.clear() # Limpiar memoria para ver cambios
-                        # No hacemos rerun aquí inmediato para dejar ver el mensaje de éxito
-                    except Exception as e:
-                        st.error(f"Error: {e}")
-            else:
-                st.warning("Escribe un nombre para el producto.")
+    # --- AGREGAR PRODUCTO (FORMULARIO) ---
+    st.subheader("📦 Agregar Producto Nuevo")
+    with st.form("form_nuevo_prod", clear_on_submit=True):
+        c1, c2 = st.columns([3, 1])
+        with c1: n_nom = st.text_input("Nombre")
+        with c2: n_prec = st.number_input("Precio", min_value=0.0)
+        if st.form_submit_button("➕ Guardar en Catálogo"):
+            if n_nom:
+                try:
+                    df_cat = cargar_datos_sheets("Catalogo", ["Producto", "Precio"])
+                    nuevo = pd.DataFrame([{"Producto": n_nom, "Precio": float(n_prec)}])
+                    conn.update(worksheet="Catalogo", data=pd.concat([df_cat, nuevo], ignore_index=True))
+                    st.cache_data.clear()
+                    st.success(f"Producto '{n_nom}' agregado.")
+                except Exception as e: st.error(f"Error: {e}")
 
     st.divider()
 
-    # --- 3. EDITAR PRODUCTOS EXISTENTES (TABLA) ---
-    st.subheader("✏️ Editar Precios o Borrar")
-    st.caption("Modifica los precios aquí abajo y dale a 'Guardar Cambios'. Para borrar, selecciona la fila y presiona Suprimir (Del).")
+    # --- EDITAR TABLAS ---
+    st.subheader("✏️ Editar Tablas (Borrados / Correcciones)")
     
-    # Cargamos de nuevo para ver lo que acabamos de agregar
-    df_catalogo = cargar_datos_sheets("Catalogo", ["Producto", "Precio"])
-    
-    df_catalogo_editado = st.data_editor(
-        df_catalogo,
-        num_rows="dynamic",
-        use_container_width=True,
-        key="editor_catalogo_main",
-        column_config={
-            "Precio": st.column_config.NumberColumn(
-                "Precio Unitario",
-                format="$%d"
-            )
-        }
-    )
-
-    if st.button("💾 Guardar Cambios en Tabla (Precios/Borrados)"):
-        try:
-            df_catalogo_editado["Precio"] = pd.to_numeric(df_catalogo_editado["Precio"], errors='coerce').fillna(0)
-            conn.update(worksheet="Catalogo", data=df_catalogo_editado)
-            st.success("✅ Tabla actualizada correctamente.")
+    with st.expander("📂 Catálogo de Productos (Editar precios o borrar)", expanded=False):
+        df_cat_edit = st.data_editor(cargar_datos_sheets("Catalogo", ["Producto", "Precio"]), num_rows="dynamic", use_container_width=True, key="ed_cat")
+        if st.button("💾 Guardar Cambios Catálogo"):
+            df_cat_edit["Precio"] = pd.to_numeric(df_cat_edit["Precio"], errors='coerce').fillna(0)
+            conn.update(worksheet="Catalogo", data=df_cat_edit)
             st.cache_data.clear()
+            st.success("Catálogo actualizado.")
             st.rerun()
-        except Exception as e:
-            st.error(f"Error al guardar tabla: {e}")
 
-    st.divider()
-
-    # --- 4. HISTORIAL DE VENTAS Y GASTOS ---
-    with st.expander("📝 Ver Historial de Ventas y Gastos"):
-        col_edit1, col_edit2 = st.columns(2)
-        with col_edit1:
-            st.write("**Historial Ventas**")
-            df_ventas_editado = st.data_editor(df_v, num_rows="dynamic", key="ed_vtas")
-            if st.button("Guardar Cambios Ventas"):
-                conn.update(worksheet="Ventas", data=df_ventas_editado)
-                st.rerun()
-
-        with col_edit2:
-            st.write("**Historial Gastos**")
-            df_gastos_editado = st.data_editor(df_g, num_rows="dynamic", key="ed_gts")
-            if st.button("Guardar Cambios Gastos"):
+    c_e1, c_e2 = st.columns(2)
+    with c_e1:
+        st.write("**Historial Ventas**")
+        df_v_edit = st.data_editor(df_v, num_rows="dynamic", key="ed_vtas")
+        if st.button("💾 Guardar Ventas"):
+            conn.update(worksheet="Ventas", data=df_v_edit)
+            st.cache_data.clear()
+            st.success("Guardado.")
+            st.rerun()
+            
+    with c_e2:
+        st.write("**Historial Gastos**")
+        df_g_edit = st.data_editor(df_g, num_rows="dynamic", key="ed_gts")
+        if st.button("💾 Guardar Gastos"):
+            conn.update(worksheet="Gastos", data=df_g_edit)
+            st.cache_data.clear()
+            st.success("Guardado.")
+            st.rerun()
                 conn.update(worksheet="Gastos", data=df_gastos_editado)
+
