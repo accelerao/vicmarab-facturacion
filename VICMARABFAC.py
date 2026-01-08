@@ -63,26 +63,68 @@ with tab1:
     if 'factura_items' not in st.session_state:
         st.session_state.factura_items = pd.DataFrame(columns=["Descripción", "Cantidad", "Precio Unitario"])
 
+    # --- 1. CARGAR HISTORIAL DE CLIENTES ---
+    # Leemos ventas anteriores para obtener la base de datos de clientes
+    df_clientes_db = cargar_datos_sheets("Ventas", ["Cliente", "Telefono", "Direccion"])
+    
+    # Obtenemos lista de nombres únicos (quitando vacíos)
+    lista_clientes = []
+    if not df_clientes_db.empty:
+        # drop_duplicates: Si Juan compró 10 veces, solo tomamos la última vez
+        df_unicos = df_clientes_db.drop_duplicates(subset=["Cliente"], keep="last")
+        lista_clientes = df_unicos["Cliente"].dropna().tolist()
+        lista_clientes.sort() # Ordenar alfabéticamente
+
+    # --- 2. INTERFAZ DE SELECCIÓN ---
     with st.expander("👤 Datos del Cliente", expanded=True):
+        # Buscador de clientes antiguos
+        opcion_cliente = st.selectbox(
+            "📂 Buscar Cliente Existente (o selecciona 'Nuevo')", 
+            options=["-- Nuevo / Manual --"] + lista_clientes,
+            index=0
+        )
+
+        # Lógica de autocompletado
+        val_nombre = ""
+        val_tel = ""
+        val_dir = ""
+
+        if opcion_cliente != "-- Nuevo / Manual --":
+            # Si seleccionamos a alguien, buscamos sus datos
+            datos = df_clientes_db[df_clientes_db["Cliente"] == opcion_cliente].iloc[-1]
+            val_nombre = str(datos["Cliente"])
+            # Usamos "get" por si la columna está vacía en excel
+            val_tel = str(datos.get("Telefono", ""))
+            val_dir = str(datos.get("Direccion", ""))
+            
+            # Limpieza de datos (quitar 'nan' si excel estaba sucio)
+            if val_tel == "nan": val_tel = ""
+            if val_dir == "nan": val_dir = ""
+
         col1, col2 = st.columns(2)
         with col1:
-            cliente_nombre = st.text_input("Nombre del Cliente", key="cli_nom")
-            cliente_telefono = st.text_input("Número Telefónico", key="cli_tel")
+            # Usamos 'value' para pre-llenar si encontramos al cliente
+            cliente_nombre = st.text_input("Nombre del Cliente", value=val_nombre, key="cli_nom")
+            cliente_telefono = st.text_input("Número Telefónico", value=val_tel, key="cli_tel")
         with col2:
             fecha_factura = st.date_input("Fecha", date.today(), key="fecha_fac")
+            cliente_direccion = st.text_input("Dirección de entrega", value=val_dir, key="cli_dir")
 
     st.divider()
 
-    # Selección de productos del Catálogo dinámico
+    # --- (EL RESTO DEL CÓDIGO SIGUE IGUAL: PRODUCTOS, BOTÓN GUARDAR, ETC) ---
+    # Solo asegúrate de que al GUARDAR (botón final), incluyas el teléfono en la hoja:
+    
+    # ... (Sección de productos igual que antes) ...
+
+    # Copia esto también para asegurarnos de que el botón de guardar incluya el Teléfono
     c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
     with c1:
-        # Si el catálogo está vacío, mostramos opción genérica
         opciones = list(CATALOGO.keys()) if CATALOGO else ["Sin productos"]
         prod_sel = st.selectbox("Producto", options=opciones)
     with c2:
         cant = st.number_input("Cantidad", min_value=1, value=1)
     with c3:
-        # Precio automático según selección
         precio_sugerido = CATALOGO.get(prod_sel, 0.0)
         prec = st.number_input("Precio", value=float(precio_sugerido))
     with c4:
@@ -93,33 +135,28 @@ with tab1:
                 st.session_state.factura_items = pd.concat([st.session_state.factura_items, nuevo], ignore_index=True)
                 st.rerun()
 
-    # Tabla de items de la factura actual
     edited_df = st.data_editor(st.session_state.factura_items, num_rows="dynamic", use_container_width=True, key="editor_factura")
     st.session_state.factura_items = edited_df
 
     subtotal = 0
     total_final = 0
-
     if not st.session_state.factura_items.empty:
         st.session_state.factura_items['Total'] = st.session_state.factura_items['Cantidad'] * st.session_state.factura_items['Precio Unitario']
         subtotal = st.session_state.factura_items['Total'].sum()
-        # Si quieres agregar ITBIS, descomenta la siguiente línea:
-        # impuesto_monto = subtotal * 0.18 
-        total_final = subtotal # + impuesto_monto
+        total_final = subtotal
 
     st.info(f"💰 Total a cobrar: {MONEDA} {total_final:,.2f}")
 
-    # --- FUNCIÓN GENERAR PDF ---
     def generar_pdf():
         pdf = FPDF()
         pdf.add_page()
         pdf.set_font("Arial", 'B', 16)
         pdf.cell(0, 10, "VICMARAB COMERCIAL", ln=1, align="C")
-        
         pdf.set_font("Arial", size=10)
         pdf.cell(0, 10, f"Cliente: {cliente_nombre} | Tel: {cliente_telefono}", ln=1)
+        if cliente_direccion:
+            pdf.cell(0, 5, f"Dirección: {cliente_direccion}", ln=1)
         pdf.cell(0, 5, f"Fecha: {fecha_factura}", ln=1)
-        
         pdf.ln(5)
         pdf.set_font("Arial", 'B', 10)
         pdf.cell(100, 8, "Descripción", 1)
@@ -127,7 +164,6 @@ with tab1:
         pdf.cell(30, 8, "Precio", 1)
         pdf.cell(30, 8, "Total", 1)
         pdf.ln()
-        
         pdf.set_font("Arial", size=10)
         for _, row in st.session_state.factura_items.iterrows():
             pdf.cell(100, 8, str(row["Descripción"]), 1)
@@ -135,50 +171,37 @@ with tab1:
             pdf.cell(30, 8, f"{row['Precio Unitario']:,.2f}", 1)
             pdf.cell(30, 8, f"{row['Total']:,.2f}", 1)
             pdf.ln()
-            
         pdf.ln(5)
         pdf.set_font("Arial", 'B', 12)
         pdf.cell(0, 10, f"TOTAL A PAGAR: {MONEDA} {total_final:,.2f}", ln=1, align="R")
         return pdf.output(dest="S").encode("latin-1")
 
-    # --- GUARDAR VENTA ---
     if st.button("🖨️ Finalizar y Guardar Venta"):
         if cliente_nombre and not st.session_state.factura_items.empty:
             with st.spinner("Guardando en la nube..."):
                 try:
-                    # 1. Cargar historial actual
-                    df_ventas = cargar_datos_sheets("Ventas", ["Fecha", "Cliente", "Total"])
+                    # IMPORTANTE: Ahora cargamos y guardamos también el TELEFONO
+                    df_ventas = cargar_datos_sheets("Ventas", ["Fecha", "Cliente", "Telefono", "Direccion", "Total"])
                     
-                    # 2. Crear nueva fila
                     nueva_venta = pd.DataFrame([{
                         "Fecha": str(fecha_factura),
                         "Cliente": cliente_nombre,
+                        "Telefono": cliente_telefono,  # <-- Guardamos el teléfono para la próxima
+                        "Direccion": cliente_direccion,
                         "Total": float(total_final)
                     }])
                     
-                    # 3. Unir y Guardar
                     df_actualizado = pd.concat([df_ventas, nueva_venta], ignore_index=True)
                     conn.update(worksheet="Ventas", data=df_actualizado)
                     
-                    st.success("✅ Venta guardada exitosamente.")
-                    
-                    # 4. Generar y descargar PDF
+                    st.success("✅ Venta guardada.")
                     pdf_bytes = generar_pdf()
-                    st.download_button(
-                        "⬇️ Descargar PDF", 
-                        data=pdf_bytes, 
-                        file_name=f"Factura_{cliente_nombre}.pdf", 
-                        mime="application/pdf"
-                    )
-                    
-                    # Limpiar items
+                    st.download_button("⬇️ Descargar PDF", data=pdf_bytes, file_name=f"Factura_{cliente_nombre}.pdf", mime="application/pdf")
                     st.session_state.factura_items = pd.DataFrame(columns=["Descripción", "Cantidad", "Precio Unitario"])
-                    
                 except Exception as e:
-                    st.error(f"Error de conexión: {e}")
+                    st.error(f"Error: {e}")
         else:
-            st.error("⚠️ Faltan datos del cliente o productos.")
-
+            st.error("⚠️ Faltan datos.")
 # ==============================================================================
 # PESTAÑA 2: REGISTRAR GASTOS
 # ==============================================================================
