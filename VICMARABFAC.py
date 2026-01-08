@@ -285,11 +285,15 @@ with tab3:
             
     with c_e2:
         st.write("**Historial Gastos**")
+        # Creamos la tabla editable
         df_g_edit = st.data_editor(df_g, num_rows="dynamic", key="ed_gts")
+        
+        # Botón para guardar
         if st.button("💾 Guardar Gastos"):
+            # IMPORTANTE: Todo lo que esté debajo del 'if' debe tener 4 espacios de sangría
             conn.update(worksheet="Gastos", data=df_g_edit)
             st.cache_data.clear()
             st.success("Guardado.")
             st.rerun()
-                conn.update(worksheet="Gastos", data=df_gastos_editado)
+
 
