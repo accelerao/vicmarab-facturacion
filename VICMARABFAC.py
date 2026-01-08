@@ -13,8 +13,7 @@ MONEDA = "DOP"
 # --- CONEXIÓN A GOOGLE SHEETS ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# --- FUNCIONES DE CARGA OPTIMIZADAS (CON CACHÉ) ---
-# Esto evita el error "Quota Exceeded" (Error 429)
+# --- FUNCIONES DE CARGA ---
 
 @st.cache_data(ttl=600) # Guarda en memoria 10 mins
 def cargar_datos_sheets(hoja, columnas_esperadas):
@@ -85,7 +84,7 @@ with tab1:
 
     st.divider()
 
-    # --- 2. SELECCIÓN DE PRODUCTOS (HÍBRIDA) ---
+    # --- 2. SELECCIÓN DE PRODUCTOS ---
     st.write("### Agregar Producto")
     lista_opciones = ["-- Selecciona un Producto --"] + list(CATALOGO.keys()) + ["-- Otro / Manual --"]
 
@@ -179,7 +178,7 @@ with tab1:
                     conn.update(worksheet="Ventas", data=df_actualizado)
                     
                     # --- LIMPIEZA DE CACHÉ ---
-                    st.cache_data.clear() # ¡CRUCIAL PARA VER EL CAMBIO!
+                    st.cache_data.clear()
                     
                     st.success("✅ Venta guardada.")
                     pdf_bytes = generar_pdf()
@@ -295,5 +294,3 @@ with tab3:
             st.cache_data.clear()
             st.success("Guardado.")
             st.rerun()
-
-
