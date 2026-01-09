@@ -18,7 +18,7 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 @st.cache_data(ttl=600) # Guarda en memoria 10 mins
 def cargar_datos_sheets(hoja, columnas_esperadas):
     try:
-        # Leemos sin ttl=0 para usar la caché
+        # Lee caché
         df = conn.read(worksheet=hoja, usecols=columnas_esperadas)
         df = df.dropna(how="all")
         return df
@@ -31,7 +31,7 @@ def obtener_catalogo():
         df = conn.read(worksheet="Catalogo", usecols=[0, 1])
         df = df.dropna()
         if df.empty: return {}
-        # Convertimos a diccionario: {"Producto": Precio}
+        # Convertir a diccionario: {"Producto": Precio}
         return dict(zip(df.iloc[:, 0], df.iloc[:, 1]))
     except Exception:
         return {}
@@ -43,7 +43,7 @@ CATALOGO = obtener_catalogo()
 tab1, tab2, tab3 = st.tabs(["🧾 Facturación", "💸 Registrar Gastos", "⚙️ Administración"])
 
 # ==============================================================================
-# PESTAÑA 1: FACTURACIÓN (CON MEMORIA DE CLIENTES + PRODUCTOS FLEXIBLES)
+# PESTAÑA 1: FACTURACIÓN
 # ==============================================================================
 with tab1:
     st.header("Nueva Factura")
@@ -284,7 +284,7 @@ with tab3:
             
     with c_e2:
         st.write("**Historial Gastos**")
-        # Creamos la tabla editable
+        #Tabla editable
         df_g_edit = st.data_editor(df_g, num_rows="dynamic", key="ed_gts")
         
         # Botón para guardar
@@ -294,3 +294,4 @@ with tab3:
             st.cache_data.clear()
             st.success("Guardado.")
             st.rerun()
+
