@@ -18,7 +18,7 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 @st.cache_data(ttl=600) # Guarda en memoria 10 mins
 def cargar_datos_sheets(hoja, columnas_esperadas):
     try:
-        # Lee caché
+        # Leemos sin ttl=0 para usar la caché
         df = conn.read(worksheet=hoja, usecols=columnas_esperadas)
         df = df.dropna(how="all")
         return df
@@ -31,7 +31,7 @@ def obtener_catalogo():
         df = conn.read(worksheet="Catalogo", usecols=[0, 1])
         df = df.dropna()
         if df.empty: return {}
-        # Convertir a diccionario: {"Producto": Precio}
+        # Convertimos a diccionario: {"Producto": Precio}
         return dict(zip(df.iloc[:, 0], df.iloc[:, 1]))
     except Exception:
         return {}
@@ -39,11 +39,49 @@ def obtener_catalogo():
 # --- CARGA INICIAL ---
 CATALOGO = obtener_catalogo()
 
+# --- SISTEMA DE LOGIN MULTI-USUARIO ---
+if "admin_logged_in" not in st.session_state:
+    st.session_state.admin_logged_in = False
+    st.session_state.admin_user = "" # Aquí guardaremos el nombre de quien entró
+
+with st.sidebar:
+    st.header("🔐 Acceso Admin")
+    if not st.session_state.admin_logged_in:
+        usuario_input = st.text_input("Usuario")
+        clave_input = st.text_input("Contraseña", type="password")
+        
+        if st.button("Entrar"):
+            # 1. Leemos la pestaña Usuarios de Google Sheets
+            df_usuarios = cargar_datos_sheets("Usuarios", ["Usuario", "Clave"])
+            
+            if not df_usuarios.empty:
+                # Aseguramos que todo sea texto para evitar errores de comparación
+                df_usuarios["Usuario"] = df_usuarios["Usuario"].astype(str)
+                df_usuarios["Clave"] = df_usuarios["Clave"].astype(str)
+                
+                # 2. Buscamos si hay coincidencia exacta
+                match = df_usuarios[(df_usuarios["Usuario"] == usuario_input) & (df_usuarios["Clave"] == clave_input)]
+                
+                if not match.empty:
+                    st.session_state.admin_logged_in = True
+                    st.session_state.admin_user = usuario_input # Guardamos quién es
+                    st.rerun()
+                else:
+                    st.error("❌ Usuario o contraseña incorrectos")
+            else:
+                st.error("⚠️ No hay usuarios creados en la pestaña 'Usuarios'")
+    else:
+        st.success(f"✅ Hola, {st.session_state.admin_user}")
+        if st.button("Cerrar Sesión"):
+            st.session_state.admin_logged_in = False
+            st.session_state.admin_user = ""
+            st.rerun()
+
 # --- PESTAÑAS ---
 tab1, tab2, tab3 = st.tabs(["🧾 Facturación", "💸 Registrar Gastos", "⚙️ Administración"])
 
 # ==============================================================================
-# PESTAÑA 1: FACTURACIÓN
+# PESTAÑA 1: FACTURACIÓN (CON MEMORIA DE CLIENTES + PRODUCTOS FLEXIBLES)
 # ==============================================================================
 with tab1:
     st.header("Nueva Factura")
@@ -190,108 +228,123 @@ with tab1:
             st.error("⚠️ Faltan datos.")
 
 # ==============================================================================
-# PESTAÑA 2: GASTOS
+# PESTAÑA 2: GASTOS (BLOQUEADA)
 # ==============================================================================
 with tab2:
-    st.header("📉 Registro de Gastos")
-    col_g1, col_g2, col_g3 = st.columns(3)
-    with col_g1: gasto_concepto = st.text_input("Concepto (Ej. Luz)")
-    with col_g2: gasto_monto = st.number_input("Monto Gasto", min_value=0.0, step=100.0)
-    with col_g3:
-        gasto_fecha = st.date_input("Fecha Gasto", date.today())
-        gasto_categoria = st.selectbox("Categoría", ["Materia Prima", "Transporte", "Servicios", "Nómina", "Otros"])
+    if not st.session_state.admin_logged_in:
+        st.warning("🔒 Área restringida. Inicia sesión en el menú de la izquierda para registrar gastos.")
+    else:
+        st.header("📉 Registro de Gastos")
+        col_g1, col_g2, col_g3 = st.columns(3)
+        with col_g1: 
+            gasto_concepto = st.text_input("Concepto (Ej. Luz)")
+        with col_g2: 
+            gasto_monto = st.number_input("Monto Gasto", min_value=0.0, step=100.0)
+        with col_g3:
+            gasto_fecha = st.date_input("Fecha Gasto", date.today())
+            gasto_categoria = st.selectbox("Categoría", ["Materia Prima", "Transporte", "Servicios", "Nómina", "Otros"])
 
-    if st.button("Guardar Gasto"):
-        if gasto_concepto and gasto_monto > 0:
-            with st.spinner("Guardando..."):
-                try:
-                    df_gastos = cargar_datos_sheets("Gastos", ["Fecha", "Concepto", "Categoría", "Monto"])
-                    nuevo_gasto = pd.DataFrame([{
-                        "Fecha": str(gasto_fecha), "Concepto": gasto_concepto,
-                        "Categoría": gasto_categoria, "Monto": float(gasto_monto)
-                    }])
-                    conn.update(worksheet="Gastos", data=pd.concat([df_gastos, nuevo_gasto], ignore_index=True))
-                    
-                    # --- LIMPIEZA DE CACHÉ ---
-                    st.cache_data.clear()
-                    
-                    st.success(f"✅ Gasto guardado.")
-                except Exception as e:
-                    st.error(f"Error: {e}")
-        else:
-            st.warning("Revisa los datos.")
+        if st.button("Guardar Gasto"):
+            if gasto_concepto and gasto_monto > 0:
+                with st.spinner("Guardando..."):
+                    try:
+                        # 1. Cargamos la hoja asegurándonos de buscar la columna 'Registrado_Por'
+                        df_gastos = cargar_datos_sheets("Gastos", ["Fecha", "Concepto", "Categoría", "Monto", "Registrado_Por"])
+                        
+                        # 2. Creamos el nuevo registro añadiendo el nombre del usuario logueado
+                        nuevo_gasto = pd.DataFrame([{
+                            "Fecha": str(gasto_fecha), 
+                            "Concepto": gasto_concepto,
+                            "Categoría": gasto_categoria, 
+                            "Monto": float(gasto_monto),
+                            "Registrado_Por": st.session_state.admin_user  # <-- AQUÍ ATRAPAMOS AL USUARIO
+                        }])
+                        
+                        # 3. Guardamos en Google Sheets
+                        conn.update(worksheet="Gastos", data=pd.concat([df_gastos, nuevo_gasto], ignore_index=True))
+                        st.cache_data.clear()
+                        st.success(f"✅ Gasto guardado por {st.session_state.admin_user}.")
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+                        st.warning("⚠️ Pista: Revisa que hayas escrito 'Registrado_Por' en la fila 1 de la pestaña Gastos en tu Excel.")
+            else:
+                st.warning("Revisa los datos.")
 
 # ==============================================================================
-# PESTAÑA 3: ADMINISTRACIÓN
+# PESTAÑA 3: ADMINISTRACIÓN (CORREGIDA)
 # ==============================================================================
 with tab3:
-    st.header("⚙️ Administración")
-    if st.button("🔄 Recargar Datos Manualmente"):
-        st.cache_data.clear()
-        st.rerun()
-
-    # --- RESUMEN ---
-    df_v = cargar_datos_sheets("Ventas", ["Fecha", "Cliente", "Total"])
-    df_g = cargar_datos_sheets("Gastos", ["Fecha", "Concepto", "Categoría", "Monto"])
-    if not df_v.empty or not df_g.empty:
-        ing = pd.to_numeric(df_v["Total"], errors='coerce').sum()
-        gas = pd.to_numeric(df_g["Monto"], errors='coerce').sum()
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Ingresos", f"{MONEDA} {ing:,.2f}")
-        c2.metric("Gastos", f"{MONEDA} {gas:,.2f}")
-        c3.metric("Ganancia", f"{MONEDA} {(ing-gas):,.2f}")
-    st.divider()
-
-    # --- AGREGAR PRODUCTO (FORMULARIO) ---
-    st.subheader("📦 Agregar Producto Nuevo")
-    with st.form("form_nuevo_prod", clear_on_submit=True):
-        c1, c2 = st.columns([3, 1])
-        with c1: n_nom = st.text_input("Nombre")
-        with c2: n_prec = st.number_input("Precio", min_value=0.0)
-        if st.form_submit_button("➕ Guardar en Catálogo"):
-            if n_nom:
-                try:
-                    df_cat = cargar_datos_sheets("Catalogo", ["Producto", "Precio"])
-                    nuevo = pd.DataFrame([{"Producto": n_nom, "Precio": float(n_prec)}])
-                    conn.update(worksheet="Catalogo", data=pd.concat([df_cat, nuevo], ignore_index=True))
-                    st.cache_data.clear()
-                    st.success(f"Producto '{n_nom}' agregado.")
-                except Exception as e: st.error(f"Error: {e}")
-
-    st.divider()
-
-    # --- EDITAR TABLAS ---
-    st.subheader("✏️ Editar Tablas (Borrados / Correcciones)")
-    
-    with st.expander("📂 Catálogo de Productos (Editar precios o borrar)", expanded=False):
-        df_cat_edit = st.data_editor(cargar_datos_sheets("Catalogo", ["Producto", "Precio"]), num_rows="dynamic", use_container_width=True, key="ed_cat")
-        if st.button("💾 Guardar Cambios Catálogo"):
-            df_cat_edit["Precio"] = pd.to_numeric(df_cat_edit["Precio"], errors='coerce').fillna(0)
-            conn.update(worksheet="Catalogo", data=df_cat_edit)
+    if not st.session_state.admin_logged_in:
+        st.warning("🔒 Área restringida. Inicia sesión en el menú de la izquierda para ver la contabilidad.")
+    else:
+        st.header("⚙️ Administración")
+        if st.button("🔄 Recargar Datos Manualmente"):
             st.cache_data.clear()
-            st.success("Catálogo actualizado.")
             st.rerun()
 
-    c_e1, c_e2 = st.columns(2)
-    with c_e1:
-        st.write("**Historial Ventas**")
-        df_v_edit = st.data_editor(df_v, num_rows="dynamic", key="ed_vtas")
-        if st.button("💾 Guardar Ventas"):
-            conn.update(worksheet="Ventas", data=df_v_edit)
-            st.cache_data.clear()
-            st.success("Guardado.")
-            st.rerun()
-            
-    with c_e2:
-        st.write("**Historial Gastos**")
-        #Tabla editable
-        df_g_edit = st.data_editor(df_g, num_rows="dynamic", key="ed_gts")
+        # --- RESUMEN ---
+        df_v = cargar_datos_sheets("Ventas", ["Fecha", "Cliente", "Total"])
         
-        # Botón para guardar
-        if st.button("💾 Guardar Gastos"):
-            # IMPORTANTE: Todo lo que esté debajo del 'if' debe tener 4 espacios de sangría
-            conn.update(worksheet="Gastos", data=df_g_edit)
-            st.cache_data.clear()
-            st.success("Guardado.")
-            st.rerun()
+        # ⚠️ CORRECCIÓN AQUÍ: Agregamos "Registrado_Por" para que aparezca en la tabla
+        df_g = cargar_datos_sheets("Gastos", ["Fecha", "Concepto", "Categoría", "Monto", "Registrado_Por"])
+        
+        if not df_v.empty or not df_g.empty:
+            ing = pd.to_numeric(df_v["Total"], errors='coerce').sum()
+            gas = pd.to_numeric(df_g["Monto"], errors='coerce').sum()
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Ingresos", f"{MONEDA} {ing:,.2f}")
+            c2.metric("Gastos", f"{MONEDA} {gas:,.2f}")
+            c3.metric("Ganancia", f"{MONEDA} {(ing-gas):,.2f}")
+        st.divider()
+
+        # --- AGREGAR PRODUCTO (FORMULARIO) ---
+        st.subheader("📦 Agregar Producto Nuevo")
+        with st.form("form_nuevo_prod", clear_on_submit=True):
+            c1, c2 = st.columns([3, 1])
+            with c1: n_nom = st.text_input("Nombre")
+            with c2: n_prec = st.number_input("Precio", min_value=0.0)
+            if st.form_submit_button("➕ Guardar en Catálogo"):
+                if n_nom:
+                    try:
+                        df_cat = cargar_datos_sheets("Catalogo", ["Producto", "Precio"])
+                        nuevo = pd.DataFrame([{"Producto": n_nom, "Precio": float(n_prec)}])
+                        conn.update(worksheet="Catalogo", data=pd.concat([df_cat, nuevo], ignore_index=True))
+                        st.cache_data.clear()
+                        st.success(f"Producto '{n_nom}' agregado.")
+                    except Exception as e: st.error(f"Error: {e}")
+
+        st.divider()
+
+        # --- EDITAR TABLAS ---
+        st.subheader("✏️ Editar Tablas (Borrados / Correcciones)")
+        
+        with st.expander("📂 Catálogo de Productos (Editar precios o borrar)", expanded=False):
+            df_cat_edit = st.data_editor(cargar_datos_sheets("Catalogo", ["Producto", "Precio"]), num_rows="dynamic", use_container_width=True, key="ed_cat")
+            if st.button("💾 Guardar Cambios Catálogo"):
+                df_cat_edit["Precio"] = pd.to_numeric(df_cat_edit["Precio"], errors='coerce').fillna(0)
+                conn.update(worksheet="Catalogo", data=df_cat_edit)
+                st.cache_data.clear()
+                st.success("Catálogo actualizado.")
+                st.rerun()
+
+        c_e1, c_e2 = st.columns(2)
+        with c_e1:
+            st.write("**Historial Ventas**")
+            df_v_edit = st.data_editor(df_v, num_rows="dynamic", key="ed_vtas")
+            if st.button("💾 Guardar Ventas"):
+                conn.update(worksheet="Ventas", data=df_v_edit)
+                st.cache_data.clear()
+                st.success("Guardado.")
+                st.rerun()
+                
+        with c_e2:
+            st.write("**Historial Gastos**")
+            # La tabla ahora mostrará la columna extra automáticamente
+            df_g_edit = st.data_editor(df_g, num_rows="dynamic", key="ed_gts")
+            if st.button("💾 Guardar Gastos"):
+                conn.update(worksheet="Gastos", data=df_g_edit)
+                st.cache_data.clear()
+                st.success("Guardado.")
+                st.rerun()
+
 
