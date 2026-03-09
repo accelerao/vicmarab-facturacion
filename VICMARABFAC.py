@@ -42,7 +42,7 @@ CATALOGO = obtener_catalogo()
 # --- SISTEMA DE LOGIN MULTI-USUARIO ---
 if "admin_logged_in" not in st.session_state:
     st.session_state.admin_logged_in = False
-    st.session_state.admin_user = "" # Aquí guardaremos el nombre de quien entró
+    st.session_state.admin_user = ""
 
 with st.sidebar:
     st.header("🔐 Acceso Admin")
@@ -51,20 +51,17 @@ with st.sidebar:
         clave_input = st.text_input("Contraseña", type="password")
         
         if st.button("Entrar"):
-            # 1. Leemos la pestaña Usuarios de Google Sheets
             df_usuarios = cargar_datos_sheets("Usuarios", ["Usuario", "Clave"])
             
             if not df_usuarios.empty:
-                # Aseguramos que todo sea texto para evitar errores de comparación
                 df_usuarios["Usuario"] = df_usuarios["Usuario"].astype(str)
                 df_usuarios["Clave"] = df_usuarios["Clave"].astype(str)
                 
-                # 2. Buscamos si hay coincidencia exacta
                 match = df_usuarios[(df_usuarios["Usuario"] == usuario_input) & (df_usuarios["Clave"] == clave_input)]
                 
                 if not match.empty:
                     st.session_state.admin_logged_in = True
-                    st.session_state.admin_user = usuario_input # Guardamos quién es
+                    st.session_state.admin_user = usuario_input
                     st.rerun()
                 else:
                     st.error("❌ Usuario o contraseña incorrectos")
@@ -72,6 +69,35 @@ with st.sidebar:
                 st.error("⚠️ No hay usuarios creados en la pestaña 'Usuarios'")
     else:
         st.success(f"✅ Hola, {st.session_state.admin_user}")
+        
+        # --- NUEVO: SECCIÓN PARA CAMBIAR CONTRASEÑA ---
+        with st.expander("⚙️ Cambiar mi contraseña", expanded=False):
+            nueva_clave = st.text_input("Nueva contraseña", type="password", key="pass1")
+            confirmar_clave = st.text_input("Confirmar contraseña", type="password", key="pass2")
+            
+            if st.button("Actualizar"):
+                if nueva_clave and nueva_clave == confirmar_clave:
+                    with st.spinner("Actualizando..."):
+                        try:
+                            # 1. Cargamos la lista de usuarios
+                            df_usuarios = cargar_datos_sheets("Usuarios", ["Usuario", "Clave"])
+                            
+                            # 2. Buscamos la fila del usuario actual y cambiamos su clave
+                            df_usuarios.loc[df_usuarios["Usuario"] == st.session_state.admin_user, "Clave"] = nueva_clave
+                            
+                            # 3. Guardamos los cambios en Google Sheets
+                            conn.update(worksheet="Usuarios", data=df_usuarios)
+                            st.cache_data.clear()
+                            
+                            st.success("✅ Contraseña cambiada con éxito.")
+                        except Exception as e:
+                            st.error(f"Error al cambiar clave: {e}")
+                elif nueva_clave != confirmar_clave:
+                    st.error("❌ Las contraseñas no coinciden.")
+                else:
+                    st.warning("Escribe una contraseña válida.")
+        
+        st.divider()
         if st.button("Cerrar Sesión"):
             st.session_state.admin_logged_in = False
             st.session_state.admin_user = ""
